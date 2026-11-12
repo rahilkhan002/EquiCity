@@ -1,0 +1,119 @@
+version: "3.9"
+
+services:
+  # ─── MongoDB Replica Set (single-node for local dev) ───────────────────────
+  mongo:
+    image: mongo:7.0
+    container_name: equicity-mongo
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all", "--keyFile", "/etc/mongo/keyfile"]
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: equicity
+      MONGO_INITDB_ROOT_PASSWORD: equicity_secret
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+      - ./mongo-keyfile:/etc/mongo/keyfile:ro
+    networks:
+      - equicity_net
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ─── Replica Set Initializer (runs once) ───────────────────────────────────
+  mongo-init:
+    image: mongo:7.0
+    container_name: equicity-mongo-init
+    depends_on:
+      mongo:
+        condition: service_healthy
+    entrypoint: |
+      bash -c "
+        mongosh --host mongo:27017 -u equicity -p equicity_secret --authenticationDatabase admin --eval '
+          try { rs.status() } catch(e) {
+            rs.initiate({ _id: \"rs0\", members: [{ _id: 0, host: \"mongo:27017\" }] })
+          }
+          print(\"Replica set ready\")
+        '
+      "
+    networks:
+      - equicity_net
+    restart: on-failure
+
+  # ─── FastAPI Backend ────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: equicity-backend
+    depends_on:
+      mongo:
+        condition: service_healthy
+    environment:
+      MONGO_URI: "mongodb://equicity:equicity_secret@mongo:27017/equicity?replicaSet=rs0&authSource=admin"
+      DB_NAME: equicity
+      ALERT_DRI_THRESHOLD: 75.0
+      ALERT_DRI_RESET: 70.0
+      ALERT_COOLDOWN_DAYS: 14
+    ports:
+      - "8000:8000"
+    networks:
+      - equicity_net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    volumes:
+      - ./backend:/app
+
+  # ─── Database Seeder (runs once after backend is healthy) ──────────────────
+  seeder:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: equicity-seeder
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      MONGO_URI: "mongodb://equicity:equicity_secret@mongo:27017/equicity?replicaSet=rs0&authSource=admin"
+      DB_NAME: equicity
+    entrypoint: |
+      bash -c "
+        python -m app.seed.seed_projects &&
+        python -m app.seed.seed_tracts &&
+        echo 'Seeding complete'
+      "
+    networks:
+      - equicity_net
+    restart: on-failure
+
+  # ─── Next.js Frontend ───────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: equicity-frontend
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+      NEXT_PUBLIC_MAPBOX_TOKEN: ${MAPBOX_TOKEN:-pk.placeholder}
+    ports:
+      - "3000:3000"
+    networks:
+      - equicity_net
+
+volumes:
+  mongo_data:
+
+networks:
+  equicity_net:
+    driver: bridge
+

@@ -1,0 +1,16 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Mapbox & MapLibre GL overrides */
+.mapboxgl-map, .maplibregl-map {
+  font-family: inherit;
+}
+.mapboxgl-ctrl-group, .maplibregl-ctrl-group {
+  background: rgb(17 24 39) !important;
+  border: 1px solid rgb(55 65 81) !important;
+}
+.mapboxgl-ctrl-group button, .maplibregl-ctrl-group button {
+  background: rgb(17 24 39) !important;
+  color: white !important;
+}
